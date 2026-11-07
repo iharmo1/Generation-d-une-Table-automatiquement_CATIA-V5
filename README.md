@@ -9,7 +9,8 @@ Le même résultat est obtenu par **3 méthodes différentes**, pour comparer le
 Table Génerée
 
 <img width="959" height="465" alt="image" src="https://github.com/user-attachments/assets/74e1ffcd-ea19-48ca-8a92-fbb5e60bb6d2" />
-![Uploading demo_catia.gif…]()
+<img width="960" height="498" alt="demo_catia" src="https://github.com/user-attachments/assets/359e9d2b-90c7-4117-ad3d-07f8b87e4093" />
+
 
 
 
