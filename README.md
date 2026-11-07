@@ -79,7 +79,8 @@ Le fichier `Table __.CATPart` est un exemple de pièce générée par les script
 ├── Table3_Excel_CATIA.bas            Méthode VBA Excel
 ├── Table3_PartDesign_v5.CATScript    Méthode CATScript
 ├── Table __.CATPart                  Pièce exemple générée
-└── table_catia.png                   Capture d'écran du résultat
+└── table_catia.png                   Image de la table du catia
+└── demo_catia.gif                    Un GIF du table_Catia
 ```
 
 ## Auteur
