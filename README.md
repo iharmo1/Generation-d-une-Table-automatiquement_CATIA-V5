@@ -9,6 +9,8 @@ Le même résultat est obtenu par **3 méthodes différentes**, pour comparer le
 Table Génerée
 
 <img width="959" height="465" alt="image" src="https://github.com/user-attachments/assets/74e1ffcd-ea19-48ca-8a92-fbb5e60bb6d2" />
+![Uploading demo_catia.gif…]()
+
 
 
 *Résultat dans CATIA V5 : vue isométrique (en haut à gauche) et vues orthogonales de la table.*
