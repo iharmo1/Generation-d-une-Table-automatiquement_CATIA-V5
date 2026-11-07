@@ -11,7 +11,7 @@ Table Génerée
 <img width="959" height="465" alt="image" src="https://github.com/user-attachments/assets/74e1ffcd-ea19-48ca-8a92-fbb5e60bb6d2" />
 
 le GIF
-<img width="960" height="498" alt="demo_catia" src="https://github.com/user-attachments/assets/df38eb5b-4eae-426c-bed0-67e0b75bd08b" />
+`![Démonstration de la table dans CATIA V5](demo_catia.gif)`
 
 
 
