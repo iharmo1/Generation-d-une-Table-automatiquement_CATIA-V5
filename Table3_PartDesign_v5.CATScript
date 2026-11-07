@@ -1,0 +1,421 @@
+'==============================================================================
+' Table3 - ENSAM CASA  (plan Table3.pdf, A2)
+' Macro CATIA V5 - CATScript / VBScript - Workbench Part Design
+'
+' Repere : X = longueur (1350), Y = profondeur (860), Z = hauteur (2130)
+' Origine : coin arriere-gauche au sol. Unites : mm
+'
+' v5 - CORRECTION DU DESSOUS DU PLATEAU (comparaison avec le plan) :
+'  - plus de traverses sous le plateau (le plan n'en montre aucune)
+'  - chassis bas = 2 traverses laterales (selon Y) + 1 TRAVERSE CENTRALE
+'    selon X a mi-profondeur (Y = 405..455, vue de cote : traits caches)
+'    -> plus de traverses avant / arriere basses
+'  - tablette 20 deg posee sur l'arete de la traverse centrale
+'
+' v4 - correction de "AddNewPad a echoue" :
+'  1. Tous les arguments envoyes a CATIA sont convertis en Double (CDbl) :
+'     les Const entieres (ex. 2130) etaient transmises en Integer.
+'  2. Lignes CHAINEES : ligne(i).StartPoint = ligne(i-1).EndPoint
+'     (plus de points orphelins) -> profil ferme.
+'  3. Le Body cible est remis "en travail" juste avant chaque Pad.
+'  4. MakePad : 2 essais (le 2e apres part.Update) et message detaille
+'     (erreur CATIA, nb d'elements du sketch, nb d'echecs de liaison).
+'==============================================================================
+Language="VBSCRIPT"
+
+'---------------- PARAMETRES (modifiables) ------------------------------------
+Const LG       = 1350   ' longueur table et cadre haut
+Const PR       = 860    ' profondeur table
+Const H_PLAT   = 880    ' hauteur dessus plateau
+Const E_PLAT   = 30     ' epaisseur plateau
+Const SEC      = 50     ' section tubes 50x50
+Const PAROI    = 3      ' epaisseur paroi tubes (0 = tubes pleins)
+Const Z_RAIL   = 90     ' hauteur bas traverses basses
+Const H_TOT    = 2130   ' hauteur totale montants arriere
+Const P_SUP    = 450    ' profondeur cadre superieur
+Const Y_TRAV   = 405    ' traverse centrale basse : Y de depart (largeur SEC) = (PR-SEC)/2
+
+Const ALLEGER_PLATEAU = True   ' True : plateau = peau + couronne
+Const E_PEAU   = 6             ' epaisseur peau du plateau
+Const L_COURON = 40            ' largeur couronne perimetrique
+
+' Etagere inclinee haute (vue de cote)
+Const ANG_ETAG   = 80          ' angle avec le montant (=> 10 deg sous l'horizontale)
+Const Y_ETAG_FIN = 345         ' profondeur jusqu'au rebord
+Const H_ETAG     = 370         ' hauteur sous rebord au-dessus du plateau
+Const E_ETAG     = 20          ' epaisseur etagere
+Const H_REBORD   = 40          ' hauteur totale du rebord
+Const L_REBORD   = 20          ' epaisseur du rebord
+
+' Tablette basse inclinee a 20 deg
+Const ANG_TAB  = 20
+Const L_TAB    = 330           ' longueur dans le plan de coupe
+Const E_TAB    = 20
+Const W_TAB    = 450           ' largeur selon X
+Const TAB_Y    = 302           ' arete arriere basse (lue sur le plan)
+Const TAB_Z    = 196           ' -> la face inferieure touche l'arete de la traverse (Z=140 a Y=455)
+
+' Panneau 1000 x 700 x 20
+Const PAN_L = 1000
+Const PAN_P = 700
+Const PAN_E = 20
+
+Const PI = 3.14159265358979
+
+Dim G_LINKERR
+G_LINKERR = 0
+
+'---------------- OUTILS ------------------------------------------------------
+' Definit l'objet en travail (syntaxe sans Set, puis avec Set en secours)
+Function SetWork(part, obj)
+    On Error Resume Next
+    SetWork = True
+    Err.Clear
+    part.InWorkObject = obj
+    If Err.Number <> 0 Then
+        Err.Clear
+        Set part.InWorkObject = obj
+        If Err.Number <> 0 Then
+            SetWork = False
+            Err.Clear
+        End If
+    End If
+    On Error GoTo 0
+End Function
+
+' lnB.StartPoint = lnA.EndPoint (sans Set, puis avec Set en secours)
+Sub JoinStart(lnB, lnA)
+    Dim pt
+    On Error Resume Next
+    Err.Clear
+    Set pt = lnA.EndPoint
+    If Err.Number <> 0 Then
+        G_LINKERR = G_LINKERR + 1
+        Err.Clear
+        On Error GoTo 0
+        Exit Sub
+    End If
+    lnB.StartPoint = pt
+    If Err.Number <> 0 Then
+        Err.Clear
+        Set lnB.StartPoint = pt
+        If Err.Number <> 0 Then
+            G_LINKERR = G_LINKERR + 1
+            Err.Clear
+        End If
+    End If
+    On Error GoTo 0
+End Sub
+
+' Polygone FERME : lignes chainees. pts = h1,v1,h2,v2,...
+Sub Poly(f, pts)
+    Dim i, j, n
+    Dim ln()
+    n = (UBound(pts) + 1) \ 2
+    ReDim ln(n - 1)
+    For i = 0 To n - 1
+        j = (i + 1) Mod n
+        Set ln(i) = f.CreateLine(CDbl(pts(2 * i)), CDbl(pts(2 * i + 1)), _
+                                 CDbl(pts(2 * j)), CDbl(pts(2 * j + 1)))
+    Next
+    For i = 1 To n - 1
+        JoinStart ln(i), ln(i - 1)
+    Next
+    JoinStart ln(0), ln(n - 1)
+End Sub
+
+' Rectangle ferme
+Sub Rect(f, h1, v1, h2, v2)
+    Poly f, Array(h1, v1, h2, v1, h2, v2, h1, v2)
+End Sub
+
+' Tube carre creux : rectangle exterieur + rectangle interieur (retrait PAROI)
+Sub Tube(f, h1, v1, h2, v2)
+    Rect f, h1, v1, h2, v2
+    If PAROI > 0 Then Rect f, h1 + PAROI, v1 + PAROI, h2 - PAROI, v2 - PAROI
+End Sub
+
+' Plan decale a partir d'un plan d'origine, range dans un set geometrique
+Function NewPlane(part, hsf, gs, basePlane, d, nom)
+    Dim r, pl
+    Set r  = part.CreateReferenceFromObject(basePlane)
+    Set pl = hsf.AddNewPlaneOffset(r, CDbl(d), False)
+    pl.Name = nom
+    gs.AppendHybridShape pl
+    Set NewPlane = pl
+End Function
+
+Function NewSk(bd, ref, nom)
+    Dim s
+    Set s = bd.Sketches.Add(ref)
+    s.Name = nom
+    Set NewSk = s
+End Function
+
+' Cree un Pad dans le Body bd. 2 essais. Retourne False + diagnostic si echec.
+Function MakePad(sf, part, bd, sk, h, nom)
+    Dim p, k, err1, err2, nElem, msg
+    Set p = Nothing
+    err1 = "" : err2 = "" : nElem = "?"
+
+    On Error Resume Next
+    nElem = sk.GeometricElements.Count
+    If Err.Number <> 0 Then nElem = "?" : Err.Clear
+
+    For k = 1 To 2
+        Call SetWork(part, bd)
+        Err.Clear
+        Set p = Nothing
+        Set p = sf.AddNewPad(sk, CDbl(h))
+        If Err.Number = 0 Then
+            If Not (p Is Nothing) Then Exit For
+        Else
+            If k = 1 Then err1 = Err.Description
+            Err.Clear
+        End If
+        ' 2e essai apres mise a jour : l'erreur de Update decrit souvent le sketch
+        part.Update
+        If Err.Number <> 0 Then
+            err2 = Err.Description
+            Err.Clear
+        End If
+    Next
+    On Error GoTo 0
+
+    If p Is Nothing Then
+        msg = "Echec du Pad '" & nom & "' (sketch '" & sk.Name & "')." & vbCrLf & vbCrLf & _
+              "Erreur AddNewPad : " & err1 & vbCrLf & _
+              "Erreur Update    : " & err2 & vbCrLf & _
+              "Elements du sketch : " & nElem & vbCrLf & _
+              "Echecs de liaison des lignes : " & G_LINKERR
+        MsgBox msg, vbCritical, "Table3"
+        MakePad = False
+        Exit Function
+    End If
+
+    p.Name = nom
+    MakePad = True
+End Function
+
+' Masque un objet (set geometrique) - sans effet bloquant en cas d'echec
+Sub Masquer(doc, obj)
+    On Error Resume Next
+    Dim sel
+    Set sel = doc.Selection
+    sel.Clear
+    sel.Add obj
+    sel.VisProperties.SetShow 1
+    sel.Clear
+    On Error GoTo 0
+End Sub
+
+'---------------- PROGRAMME PRINCIPAL ----------------------------------------
+Sub CATMain()
+    Dim doc, part, body, bd2, sf, hsf, gs, org
+    Dim sk, f
+    Dim rXY, rYZ
+    Dim plX50, plY50, plZ850, plZ874, plX450
+    Dim rX50, rY50, rZ850, rZ874, rX450
+    Dim Zap, Zh
+    Dim a, ca, sa, dY, dZ, nY, nZ, b1y, b1z, b2y, b2z
+    Dim c20, s20
+
+    '--- Nouveau document Part
+    Set doc  = CATIA.Documents.Add("Part")
+    Set part = doc.Part
+    Set sf   = part.ShapeFactory
+    Set hsf  = part.HybridShapeFactory
+    Set org  = part.OriginElements
+
+    Set body = part.MainBody
+    body.Name = "Table3"
+    If Not SetWork(part, body) Then
+        MsgBox "Impossible de definir l'objet en travail (InWorkObject).", vbCritical, "Table3"
+        Exit Sub
+    End If
+
+    Zap = H_PLAT - E_PLAT - SEC       ' bas des traverses sous plateau (800)
+    Zh  = H_TOT - SEC                 ' bas du cadre superieur (2080)
+
+    '=== Plans de reference : crees une seule fois, un seul Update ============
+    Set gs = part.HybridBodies.Add()
+    gs.Name = "Plans_Reference"
+    Set plX50  = NewPlane(part, hsf, gs, org.PlaneYZ, SEC,              "P_X50")
+    Set plY50  = NewPlane(part, hsf, gs, org.PlaneZX, SEC,              "P_Y50")
+    Set plX450 = NewPlane(part, hsf, gs, org.PlaneYZ, (LG - W_TAB) / 2, "P_X450")
+    Set plZ850 = NewPlane(part, hsf, gs, org.PlaneXY, H_PLAT - E_PLAT,  "P_Z850")
+    If ALLEGER_PLATEAU Then
+        Set plZ874 = NewPlane(part, hsf, gs, org.PlaneXY, H_PLAT - E_PEAU, "P_Z874")
+    End If
+    part.Update
+    Call SetWork(part, body)
+
+    Set rXY   = part.CreateReferenceFromObject(org.PlaneXY)
+    Set rYZ   = part.CreateReferenceFromObject(org.PlaneYZ)
+    Set rX50  = part.CreateReferenceFromObject(plX50)
+    Set rY50  = part.CreateReferenceFromObject(plY50)
+    Set rX450 = part.CreateReferenceFromObject(plX450)
+    Set rZ850 = part.CreateReferenceFromObject(plZ850)
+    If ALLEGER_PLATEAU Then Set rZ874 = part.CreateReferenceFromObject(plZ874)
+
+    '##########################################################################
+    ' BODY 1 : OSSATURE TUBULAIRE
+    '##########################################################################
+
+    '=== 1. Montants arriere pleine hauteur (2 tubes, 1 Pad) =================
+    Set sk = NewSk(body, rXY, "Sk_MontantsArriere")
+    Set f = sk.OpenEdition()
+    Tube f, 0,        0, SEC, SEC
+    Tube f, LG - SEC, 0, LG,  SEC
+    sk.CloseEdition
+    If Not MakePad(sf, part, body, sk, H_TOT, "Pad_MontantsArriere") Then Exit Sub
+
+    '=== 2. Traverses basses selon Y (gauche/droite) =========================
+    ' Plan ZX decale Y = 50 ; sketch H = Z, V = X ; Pad = PR - 2*SEC
+    Set sk = NewSk(body, rY50, "Sk_TraversesY")
+    Set f = sk.OpenEdition()
+    Tube f, Z_RAIL, 0,        Z_RAIL + SEC, SEC
+    Tube f, Z_RAIL, LG - SEC, Z_RAIL + SEC, LG
+    sk.CloseEdition
+    If Not MakePad(sf, part, body, sk, PR - 2 * SEC, "Pad_TraversesY") Then Exit Sub
+
+    '=== 3. Pieds avant (2 tubes, 1 Pad) =====================================
+    Set sk = NewSk(body, rXY, "Sk_PiedsAvant")
+    Set f = sk.OpenEdition()
+    Tube f, 0,        PR - SEC, SEC, PR
+    Tube f, LG - SEC, PR - SEC, LG,  PR
+    sk.CloseEdition
+    If Not MakePad(sf, part, body, sk, H_PLAT - E_PLAT, "Pad_PiedsAvant") Then Exit Sub
+
+    '=== 4. Traverse centrale basse selon X (a mi-profondeur) ================
+    ' Plan YZ decale X = 50 ; sketch H = Y, V = Z ; Pad = LG - 2*SEC
+    Set sk = NewSk(body, rX50, "Sk_TraverseCentrale")
+    Set f = sk.OpenEdition()
+    Tube f, Y_TRAV, Z_RAIL, Y_TRAV + SEC, Z_RAIL + SEC
+    sk.CloseEdition
+    If Not MakePad(sf, part, body, sk, LG - 2 * SEC, "Pad_TraverseCentrale") Then Exit Sub
+
+    '=== 5. Cadre superieur : cotes gauche/droite (entre les 2 traverses) ====
+    Set sk = NewSk(body, rY50, "Sk_CadreHautY")
+    Set f = sk.OpenEdition()
+    Tube f, Zh, 0,        H_TOT, SEC
+    Tube f, Zh, LG - SEC, H_TOT, LG
+    sk.CloseEdition
+    If Not MakePad(sf, part, body, sk, P_SUP - 2 * SEC, "Pad_CadreHautY") Then Exit Sub
+
+    '=== 6. Cadre superieur : traverses arriere + avant, pleine longueur =====
+    ' Plan YZ d'origine (X = 0) ; sketch H = Y, V = Z ; Pad = LG
+    Set sk = NewSk(body, rYZ, "Sk_CadreHautX")
+    Set f = sk.OpenEdition()
+    Tube f, 0,           Zh, SEC,   H_TOT
+    Tube f, P_SUP - SEC, Zh, P_SUP, H_TOT
+    sk.CloseEdition
+    If Not MakePad(sf, part, body, sk, LG, "Pad_CadreHautX") Then Exit Sub
+
+    '##########################################################################
+    ' BODY 2 : PLATEAU 1350 x 860 x 30 (allege : couronne + peau)
+    '##########################################################################
+    Set bd2 = part.Bodies.Add()
+    bd2.Name = "Plateau"
+    If Not SetWork(part, bd2) Then
+        MsgBox "InWorkObject impossible (Plateau).", vbCritical, "Table3"
+        Exit Sub
+    End If
+    If ALLEGER_PLATEAU Then
+        Set sk = NewSk(bd2, rZ850, "Sk_Couronne")
+        Set f = sk.OpenEdition()
+        Rect f, 0, 0, LG, PR
+        Rect f, L_COURON, L_COURON, LG - L_COURON, PR - L_COURON
+        sk.CloseEdition
+        If Not MakePad(sf, part, bd2, sk, E_PLAT - E_PEAU, "Pad_Couronne") Then Exit Sub
+
+        Set sk = NewSk(bd2, rZ874, "Sk_Peau")
+        Set f = sk.OpenEdition()
+        Rect f, 0, 0, LG, PR
+        sk.CloseEdition
+        If Not MakePad(sf, part, bd2, sk, E_PEAU, "Pad_Peau") Then Exit Sub
+    Else
+        Set sk = NewSk(bd2, rZ850, "Sk_Plateau")
+        Set f = sk.OpenEdition()
+        Rect f, 0, 0, LG, PR
+        sk.CloseEdition
+        If Not MakePad(sf, part, bd2, sk, E_PLAT, "Pad_Plateau") Then Exit Sub
+    End If
+
+    '##########################################################################
+    ' BODY 3 : ETAGERE INCLINEE (80 deg / montant) AVEC REBORD
+    '##########################################################################
+    Set bd2 = part.Bodies.Add()
+    bd2.Name = "Etagere"
+    If Not SetWork(part, bd2) Then
+        MsgBox "InWorkObject impossible (Etagere).", vbCritical, "Table3"
+        Exit Sub
+    End If
+
+    a  = (90 - ANG_ETAG) * PI / 180          ' pente sous l'horizontale = 10 deg
+    ca = Cos(a) : sa = Sin(a)
+    dY = ca  : dZ = -sa                      ' direction vers l'avant (descend)
+    nY = sa  : nZ = ca                       ' normale vers le haut
+    b2y = Y_ETAG_FIN : b2z = H_PLAT + H_ETAG                 ' bas du rebord
+    b1y = SEC        : b1z = b2z + (b2y - b1y) * Tan(a)      ' au contact du montant
+
+    Set sk = NewSk(bd2, rX50, "Sk_Etagere")
+    Set f = sk.OpenEdition()
+    Poly f, Array( _
+        b1y, b1z, _
+        b2y, b2z, _
+        b2y + H_REBORD * nY,                    b2z + H_REBORD * nZ, _
+        b2y + H_REBORD * nY - L_REBORD * dY,    b2z + H_REBORD * nZ - L_REBORD * dZ, _
+        b2y + E_ETAG * nY - L_REBORD * dY,      b2z + E_ETAG * nZ - L_REBORD * dZ, _
+        b1y + E_ETAG * nY,                      b1z + E_ETAG * nZ)
+    sk.CloseEdition
+    If Not MakePad(sf, part, bd2, sk, LG - 2 * SEC, "Pad_Etagere") Then Exit Sub
+
+    '##########################################################################
+    ' BODY 4 : TABLETTE BASSE INCLINEE A 20 DEG (330 x 450 x 20)
+    '##########################################################################
+    Set bd2 = part.Bodies.Add()
+    bd2.Name = "Tablette_20deg"
+    If Not SetWork(part, bd2) Then
+        MsgBox "InWorkObject impossible (Tablette).", vbCritical, "Table3"
+        Exit Sub
+    End If
+
+    c20 = Cos(ANG_TAB * PI / 180) : s20 = Sin(ANG_TAB * PI / 180)
+    Set sk = NewSk(bd2, rX450, "Sk_TabletteBasse")
+    Set f = sk.OpenEdition()
+    Poly f, Array( _
+        TAB_Y,                                  TAB_Z, _
+        TAB_Y + L_TAB * c20,                    TAB_Z - L_TAB * s20, _
+        TAB_Y + L_TAB * c20 + E_TAB * s20,      TAB_Z - L_TAB * s20 + E_TAB * c20, _
+        TAB_Y + E_TAB * s20,                    TAB_Z + E_TAB * c20)
+    sk.CloseEdition
+    If Not MakePad(sf, part, bd2, sk, W_TAB, "Pad_TabletteBasse") Then Exit Sub
+
+    '##########################################################################
+    ' BODY 5 : PANNEAU 1000 x 700 x 20 (piece representee a part)
+    '##########################################################################
+    Set bd2 = part.Bodies.Add()
+    bd2.Name = "Panneau_1000x700"
+    If Not SetWork(part, bd2) Then
+        MsgBox "InWorkObject impossible (Panneau).", vbCritical, "Table3"
+        Exit Sub
+    End If
+
+    Set sk = NewSk(bd2, rXY, "Sk_Panneau")
+    Set f = sk.OpenEdition()
+    Rect f, (LG - PAN_L) / 2, PR + 100, (LG - PAN_L) / 2 + PAN_L, PR + 100 + PAN_P
+    sk.CloseEdition
+    If Not MakePad(sf, part, bd2, sk, PAN_E, "Pad_Panneau") Then Exit Sub
+
+    '=== Mise a jour unique + masquage des plans + cadrage ===================
+    Call SetWork(part, body)
+    part.Update
+    Masquer doc, gs
+    CATIA.ActiveWindow.ActiveViewer.Reframe
+
+    MsgBox "Table3 generee dans Part Design." & vbCrLf & _
+           "Body 'Table3' = ossature tubulaire creuse (paroi " & PAROI & " mm)." & vbCrLf & _
+           "Verifier la masse : Analyze > Measure Inertia (apres application du materiau).", _
+           vbInformation, "Table3 - ENSAM CASA"
+End Sub
